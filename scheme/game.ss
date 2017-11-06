@@ -1,0 +1,298 @@
+;; game.ss
+;; by tsip
+;;
+;; the thermostat game!
+;; you are a computer program whose job is
+;; to prevent the room from overheating or 
+;; from cooling too much!
+
+(load "scheme/util.ss")
+(load "scheme/random.ss")
+(load "scheme/biwas-canvas.ss")
+(load "scheme/biwas-animation.ss")
+
+;; 
+;; blue squares - cold!
+;; red squares - hot!
+;; green squares - perfect!
+;; yellow squares - warm
+;; purple - cool
+
+
+(let* ((NaN 'NaN)
+       (now NaN)
+       (prev-timestamp 0)
+       (elapsed-time 0)
+       (grid-rows 4)
+       (grid-cols 2)
+       (total-cells (* grid-rows grid-cols))
+       (free -1)
+       (hot-ind 0)
+       (cold-ind -1)
+       (border 2)
+       (heat-up-time 6)
+       (cool-down-time 8)
+       (cold '(0 0 255))
+       (hot '(255 0 0))
+       (perfect '(0 255 0))
+       (warm '(205 205 0))
+       (cool '(180 180 200))
+       (temp-range 75)
+       ;; modifier for the temps
+       (selected-cell-ind -1)
+       (current-mouse-x -1)
+       (current-mouse-y -1)
+       (prev-mouse-x -1)
+       (prev-mouse-y -1)
+       (canvas (get-canvas 'game-canvas))
+       (canvas-bounds (js-invoke canvas "getBoundingClientRect"))
+       (canvas-x (js-ref canvas-bounds "left"))
+       (canvas-y (js-ref canvas-bounds "top"))
+       (canvas-width (js-ref canvas "width"))
+       (canvas-height (js-ref canvas "height"))
+       (context (js-invoke canvas "getContext" "2d"))
+       (background (rectangle 0 0 canvas-width canvas-height))
+       (cells NaN)
+       (cell-neighbors NaN)
+       (in-temp-range?
+            (lambda (cell temp range)
+                (let* ((color (list-ref cell 3))
+                       (r (list-ref color 0))
+                       (g (list-ref color 1))
+                       (b (list-ref color 2))
+                       (temp-r (list-ref temp 0))
+                       (temp-g (list-ref temp 1))
+                       (temp-b (list-ref temp 2))
+                       (max-val (- 255 range))
+                       (temp-r-min (if (< temp-r range) 0 (- temp-r range)))
+                       (temp-r-max (if (> temp-r max-val) 255 (+ temp-r range)))
+                       (temp-g-min (if (< temp-g range) 0 (- temp-g range)))
+                       (temp-g-max (if (> temp-g max-val) 255 (+ temp-g range)))
+                       (temp-b-min (if (< temp-b range) 0 (- temp-b range)))
+                       (temp-b-max (if (> temp-b max-val) 255 (+ temp-b range))))
+                    (and (and (>= r temp-r-min) (<= r temp-r-max))
+                         (and (>= g temp-g-min) (<= g temp-g-max))
+                         (and (>= b temp-b-min) (<= b temp-b-max))))))
+       (is-warm?
+            (lambda (cell)
+                (in-temp-range? cell warm temp-range)))
+       (is-cool?
+            (lambda (cell)
+                (in-temp-range? cell cool temp-range)))
+       (is-hot?
+            (lambda (cell)
+                (in-temp-range? cell hot temp-range)))
+       (is-cold?
+            (lambda (cell)
+                (in-temp-range? cell cold temp-range)))        
+       (modify-temp!
+            (lambda (cell mod-vals)
+                (let* ((color (list-ref cell 3))
+                       (r (list-ref color 0))
+                       (g (list-ref color 1))
+                       (b (list-ref color 2))
+                       (mod-r (list-ref mod-vals 0))
+                       (mod-g (list-ref mod-vals 1))
+                       (mod-b (list-ref mod-vals 2))
+                       (nr (+ r mod-r))
+                       (ng (+ g mod-g))
+                       (nb (+ b mod-b))
+                       (new-r 
+                            (cond ((< nr 0) 0)
+                                  ((> nr 255) 255)
+                                  (else nr)))
+                       (new-g
+                            (cond ((< ng 0) 0)
+                                  ((> ng 255) 255)
+                                  (else ng)))
+                       (new-b
+                            (cond ((< nb 0) 0)
+                                  ((> nb 255) 255)
+                                  (else nb))))
+                    (begin
+                        (set-car! color new-r)
+                        (set-car! (list-tail color 1) new-g)
+                        (set-car! (list-tail color 2) new-b)))))
+       (heat-up
+            (lambda (ci time-delta)
+                (if (and (> ci -1) (not (= ci free)))
+                    (let* ((cell (list-ref cells ci))
+                           (color (list-ref cell 3))
+                           (r (list-ref color 0))
+                           (g (list-ref color 1))
+                           (b (list-ref color 2))
+                           (mod-r (if (< r 255) 50 0))
+                           (mod-g (if (< r 255) 0 -128)))
+                        (modify-temp! cell (list mod-r mod-g 0))))))
+        (cool-down
+            (lambda (ci time-delta)
+                (if (and (> ci -1) (not (= ci free)))
+                    (let* ((cell (list-ref cells ci))   
+                           (color (list-ref cell 3))
+                           (r (list-ref color 0))
+                           (g (list-ref color 1))
+                           (b (list-ref color 2))
+                           (mod-r (if (< g 255) 0 -85))
+                           (mod-g (cond ((< g 50) 10) ((< g 255) 52) (else 0))))
+                        (modify-temp! cell (list mod-r mod-g 0))))))
+       (add-neighbors-ls!
+            (lambda (neighbors)
+                (if (eq? cell-neighbors NaN)
+                    (set! cell-neighbors (list neighbors))
+                    (set-cdr! (list-tail cell-neighbors (- (length cell-neighbors) 1)) (list neighbors)))))
+       (get-neighbors
+            (lambda (i)
+                (let* ((mod-i (mod i grid-cols))
+                       (top (if (< i grid-cols) -1 (- i grid-cols)))
+                       (left (if (= mod-i 0) -1 (- i 1)))
+                       (right (if (= mod-i (- grid-cols 1)) -1 (+ i 1)))
+                       (bottom (if (> i (- (* (- grid-rows 1) grid-cols) 1)) -1 (+ i grid-cols))))
+                    (list top left right bottom))))
+        (contains
+            (lambda (cell x y)
+                (let* ((rect (list-ref cell 0))
+                       (width (list-ref rect 2))
+                       (height (list-ref rect 3))
+                       (min-x (list-ref rect 0))
+                       (min-y (list-ref rect 1))
+                       (max-x (+ min-x width))
+                       (max-y (+ min-y width)))
+                    (and (and (>= x min-x) (<= x max-x))
+                         (and (>= y min-y) (<= y max-y))))))
+        (get-cell-at 
+            (lambda (x y)
+                (letrec ((loop-cells
+                            (lambda (i)
+                                (if (< i (length cells))
+                                    (let ((cell (list-ref cells i)))
+                                        (if (and (not (eq? cell NaN)) (contains cell x y))
+                                            i
+                                            (loop-cells (+ i 1)))) 
+                                    #f))))
+                    (loop-cells 0))))
+        (mouse-event-handler
+            (lambda (ev)
+                (let* ((type (js-ref ev "type"))
+                       (client-x (js-ref ev "clientX"))
+                       (client-y (js-ref ev "clientY"))
+                       (x (- client-x canvas-x))
+                       (y (- client-y canvas-y)))
+                    (cond ((string=? type "mousedown")
+                           (begin
+                               ;;(set! update-cell-temps #t)
+                               (set! selected-cell-ind (get-cell-at x y))
+                               (set! current-mouse-x x)
+                               (set! current-mouse-y y)))
+                          ((string=? type "mouseup")
+                           (begin
+                               ;;(set! update-cell-temps #f)
+                               (set! selected-cell-ind -1)
+                               (set! current-mouse-x -1)
+                               (set! current-mouse-y -1)
+                               (set! prev-mouse-x -1)
+                               (set! prev-mouse-y -1)))
+                          ((and (string=? type "mousemove") (> selected-cell-ind -1))
+                           (begin
+                               (set! prev-mouse-x current-mouse-x)
+                               (set! prev-mouse-y current-mouse-y)
+                               (set! current-mouse-x x)
+                               (set! current-mouse-y y)))))))
+        ;;(run-game #f)
+        )
+        (letrec* ((create-cells
+                    (lambda (x y ctr)
+                        (if (< y canvas-height)
+                            (let* ((cell-width (- (/ canvas-width grid-cols) border))
+                                   (cell-height (- (/ canvas-height grid-rows) border))
+                                   (cell-color 
+                                        (cond ((= ctr hot-ind) (copy-list hot))
+                                              ((= ctr cold-ind) (copy-list cold))
+                                              (else (copy-list perfect))))
+                                   (cell (rectangle x y cell-width cell-height "black" cell-color))
+                                   (neighbors (get-neighbors ctr))
+                                   (nx (+ x cell-width border))
+                                   (next-row? (> nx canvas-width))
+                                   (next-x (if next-row? (/ border 2) nx))
+                                   (next-y (if next-row? (+ y cell-height border) y)))
+                                (begin
+                                    (add-neighbors-ls! neighbors)
+                                    (cons cell (create-cells next-x next-y (+ ctr 1)))))
+                            '())))
+                  (draw-cells
+                    (lambda (i)
+                        (if (< i (length cells))
+                            (if (= i free)
+                                (draw-cells (+ i 1))
+                                (let ((cell (list-ref cells i)))
+                                    (begin
+                                        (draw-rectangle context cell)
+                                        (draw-cells (+ i 1))))))))
+                  (update-cells
+                    (lambda (time-delta i)
+                       ;; (print time-delta)
+                        (if (< i (length cells))
+                            (if (= i free)
+                                (update-cells time-delta (+ i 1))
+                                (let ((cell (list-ref cells i))
+                                      (neighbors (list-ref cell-neighbors i)))
+                                    (begin
+                                        (if (is-hot? cell)
+                                            (map (lambda (n) (heat-up n time-delta)) neighbors))
+                                              ;;((is-cold? cell)
+                                              ;; (map (lambda (n) (cool-down n time-delta))  neighbors)))
+                                        (update-cells time-delta (+ i 1))))))))
+                  (game-loop
+                    (lambda (timestamp)
+                        (let ((time-passed (- timestamp prev-timestamp)))
+                            (begin
+                                (set! elapsed-time (+ elapsed-time time-passed))
+                                (call-animation-frame game-loop)
+                                (if (> elapsed-time 1000) 
+                                    (begin 
+                                        (update-cells (- timestamp prev-timestamp) 0)
+                                        (if (> selected-cell-ind -1)
+                                            (cool-down selected-cell-ind))
+                                        (set! elapsed-time 0)))
+                                (draw-cells 0)
+                                (set! prev-timestamp timestamp)
+                                ))))
+                )
+            (begin
+                (add-handler! "#game-canvas" "mousedown" mouse-event-handler)
+                (add-handler! "#game-canvas" "mouseup" mouse-event-handler)
+                (add-handler! "#game-canvas" "mousemove" mouse-event-handler)
+                (set-fill! background "#000000")
+                (draw-rectangle context background)
+                (set! now (current-date))
+                (seed 
+                    (date-millisecond now) 
+                    (+ (date-month now) 
+                        (date-day now) 
+                        (date-hour now) 
+                        (date-minute now) 
+                        (date-second now) 
+                        (date-millisecond now)))
+                (random)
+                (add-handler! 
+                    (js-eval "document.body") 
+                    "keyup" 
+                    (lambda (ev)
+                        (let ((type (js-ref ev "type"))
+                              (key-code (js-ref ev "keyCode")))
+                            ;;(print (format "~a ~a" type key-code))
+                            (if (string=? type "keyup")
+                                (begin
+                                    (if (= key-code 32)
+                                        (begin 
+                                            ;;(set! cold-ind (floor (* (random) total-cells)))
+                                            (set! cells  NaN)
+                                            (set! hot-ind (floor (* (random) total-cells)))
+                                            ;;(print hot-ind)
+                                            ;;(set! free (floor (* (random) total-cells)))
+                                            (set! cells (create-cells (/ border 2) (/ border 2) 0))
+                                            ;;(draw-rectangle context background)
+                                            (call-animation-frame game-loop))))))))
+            ))
+
+)
+

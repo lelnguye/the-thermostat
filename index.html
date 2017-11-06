@@ -1,0 +1,33 @@
+<!doctype html>
+
+<html>
+    <head>
+        <title>the thermostat</title>
+        <meta charset="UTF-8" />
+        <script src="js/biwascheme-min.js">
+            (load "scheme/game.ss")
+        </script>
+    </head>
+    <body>
+        <div id="header" style="text-align: center; font-family: Courier New;">
+            <h3>the thermostat</h3>
+            
+            you are a thermostat <br/>
+            do not let the room get too hot<br/>
+            click on a cell to reverse it's temperature <br />
+            hot cells warm up adjacent green cells <br />
+            warm cells have no effect on their neighbors <br /><br/>
+            <b>color scheme:</b>  <br/>
+                red - hot! <br/>
+                green - perfect! (clicking does not reverse the temperature) <br/>
+                yellow - warm (heats up faster than green tiles) <br/>
+            <!-- <button id="start">start!</button> -->
+            press space to re-fresh canvas
+        </div>
+        <div id="game-div" style="text-align:center;">
+            <br/>
+            <canvas id="game-canvas" width="200" height="400" tabindex=1></canvas>
+        </div>
+        <div id="bs-console" ></div>
+    </body>
+</html>
